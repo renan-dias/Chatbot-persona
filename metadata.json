@@ -1,0 +1,5 @@
+{
+  "name": "Multi-Persona AI Chatbot",
+  "description": "A sophisticated chatbot system allowing the configuration of multiple AI personalities or 'specialists'. An initial attendant bot routes users to the appropriate specialist based on their query, creating a dynamic and expert-driven conversation experience.",
+  "requestFramePermissions": []
+}
