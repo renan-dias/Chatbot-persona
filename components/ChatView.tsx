@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Persona, Message, ChatRole } from '../types';
 import { sendMessageToAI, resetChatSession } from '../services/geminiService';
@@ -17,6 +16,7 @@ const ChatView: React.FC<ChatViewProps> = ({ personas, activePersona, setActiveP
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevActivePersonaIdRef = useRef<string | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -25,41 +25,98 @@ const ChatView: React.FC<ChatViewProps> = ({ personas, activePersona, setActiveP
   useEffect(scrollToBottom, [messages]);
 
   useEffect(() => {
-    setMessages([]);
-    resetChatSession(activePersona.id);
-  }, [activePersona]);
+    const prevId = prevActivePersonaIdRef.current;
+    const currentId = activePersona.id;
+    prevActivePersonaIdRef.current = currentId;
+
+    if (prevId === null) { // Initial load
+        setMessages([]);
+        resetChatSession(currentId);
+        return;
+    }
+
+    if (prevId === currentId) { // No change
+        return;
+    }
+    
+    resetChatSession(currentId);
+
+    const prevPersona = personas.find(p => p.id === prevId);
+    const isTransfer = prevPersona?.isAttendant && !activePersona.isAttendant;
+
+    if (isTransfer) {
+        const introduceSpecialist = async () => {
+            setIsLoading(true);
+            try {
+                const greetingText = await sendMessageToAI(
+                    activePersona,
+                    "INSTRUÇÃO: Você é um especialista que acabou de receber um usuário transferido por um atendente. Apresente-se de forma concisa (usando seu nome de persona) e pergunte como pode ajudar o usuário.",
+                    [],
+                    personas
+                );
+                const modelMessage: Message = { role: ChatRole.MODEL, text: greetingText };
+                setMessages(prev => [...prev, modelMessage]);
+            } catch (error) {
+                console.error("Specialist introduction failed:", error);
+                const errorMessage: Message = { role: ChatRole.MODEL, text: "Ocorreu um erro ao conectar com o especialista." };
+                setMessages(prev => [...prev, errorMessage]);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        introduceSpecialist();
+    } else {
+        setMessages([]);
+    }
+  }, [activePersona, personas]);
 
   const handleSend = async () => {
     if (input.trim() === '' || isLoading) return;
 
     const userMessage: Message = { role: ChatRole.USER, text: input };
     setMessages(prev => [...prev, userMessage]);
+    const currentInput = input;
     setInput('');
     setIsLoading(true);
 
     try {
-        const responseText = await sendMessageToAI(activePersona, input, messages, personas);
+        const responseText = await sendMessageToAI(activePersona, currentInput, messages, personas);
         
-        // Attendant logic
         if (activePersona.isAttendant) {
-            try {
-                const parsedResponse = JSON.parse(responseText);
-                if (parsedResponse.specialist) {
-                    const nextPersona = personas.find(p => p.name === parsedResponse.specialist);
-                    if (nextPersona) {
-                        const systemMessage: Message = { role: ChatRole.SYSTEM, text: `Conectando com ${nextPersona.name}...`};
-                        setMessages(prev => [...prev, systemMessage]);
-                        setTimeout(() => setActivePersona(nextPersona), 1000);
-                        return;
-                    }
-                }
-            } catch (e) {
-                // Not a JSON response, treat as a normal message
-            }
-        }
+            const jsonStartIndex = responseText.lastIndexOf('{');
+            const jsonEndIndex = responseText.lastIndexOf('}');
 
-        const modelMessage: Message = { role: ChatRole.MODEL, text: responseText };
-        setMessages(prev => [...prev, modelMessage]);
+            if (jsonStartIndex !== -1 && jsonEndIndex > jsonStartIndex) {
+                const conversationalPart = responseText.substring(0, jsonStartIndex).trim();
+                const jsonPart = responseText.substring(jsonStartIndex, jsonEndIndex + 1);
+
+                if (conversationalPart) {
+                    const attendantMessage: Message = { role: ChatRole.MODEL, text: conversationalPart };
+                    setMessages(prev => [...prev, attendantMessage]);
+                }
+
+                try {
+                    const parsedResponse = JSON.parse(jsonPart);
+                    if (parsedResponse.specialist) {
+                        const nextPersona = personas.find(p => p.name === parsedResponse.specialist);
+                        if (nextPersona) {
+                            const systemMessage: Message = { role: ChatRole.SYSTEM, text: `Conectando com ${nextPersona.name}...`};
+                            setMessages(prev => [...prev, systemMessage]);
+                            setTimeout(() => setActivePersona(nextPersona), 1500);
+                            setIsLoading(false);
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Could not parse specialist JSON from response, treating as a normal message.", e);
+                }
+            }
+            const modelMessage: Message = { role: ChatRole.MODEL, text: responseText };
+            setMessages(prev => [...prev, modelMessage]);
+        } else {
+            const modelMessage: Message = { role: ChatRole.MODEL, text: responseText };
+            setMessages(prev => [...prev, modelMessage]);
+        }
     } catch (error) {
         console.error(error);
         const errorMessage: Message = { role: ChatRole.MODEL, text: "Desculpe, algo deu errado." };
